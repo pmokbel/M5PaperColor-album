@@ -1,0 +1,510 @@
+/*
+ * SPDX-FileCopyrightText: 2026 M5Stack Technology CO LTD
+ *
+ * SPDX-License-Identifier: MIT
+ */
+#include "local_photo_slideshow.h"
+#include <cstring>
+#include <cctype>
+#include <algorithm>
+#include <dirent.h>
+#include <strings.h>
+#include "esp_log.h"
+#include "esp_log_level.h"
+#include "esp_timer.h"
+#include <M5Unified.h>
+#include "hal/storage/hal_storage.h"
+#include "hal/hal.h"
+#include "hal/utils/audio/audio.h"
+#include "hal/utils/image/image_utils.h"
+#include "freertos/task.h"
+#include "apps/app_manager/app_manager.h"
+
+static const char *TAG = "Slideshow";
+
+// Define an invalid index to represent “no photo is currently displayed”
+#define NO_PHOTO 0xFFFF
+
+/* ---------- millis() ---------- */
+static inline uint32_t millis_()
+{
+    return (uint32_t)(esp_timer_get_time() / 1000ULL);
+}
+
+/* ====================== Lifecycle ====================== */
+bool PhotoSlideshow::init(const char *dir_path, uint8_t interval_min)
+{
+    strncpy(_dir_path, dir_path, DIR_PATH_MAX - 1);
+    _dir_path[DIR_PATH_MAX - 1] = '\0';
+    _interval_min               = interval_min;
+    _current_index              = NO_PHOTO;
+    _pending_index              = NO_PHOTO;
+    _running                    = false;
+    _needs_refresh              = false;
+    _last_btn_c                 = false;
+    _last_btn_b                 = false;
+    _photo_list.clear();
+    _scr_w = hal.Canvas->width();
+    _scr_h = hal.Canvas->height();
+
+    M5.Speaker.setVolume(120);
+
+    if (hal.isSDCardInserted()) {
+        // Use the SD card at startup
+        hal_storage_init(APP_STORAGE_MEDIA_SDMMC);
+    } else {
+        // Use APP storage at startup
+        hal_storage_init(APP_STORAGE_MEDIA_SPIFLASH);
+    }
+
+    scanPhotos();
+    hal.statusEventSend(OPERATION_EVENT_STARTUP_SUCCESS);
+
+    ESP_LOGI(TAG, "Init: Found %d photos, mode: %s%s", (int)_photo_list.size(), interval_min == 0 ? "manual" : "auto",
+             interval_min > 0 ? (", interval: " + std::to_string(interval_min) + " min").c_str() : "");
+    return true;
+}
+
+void PhotoSlideshow::deinit()
+{
+    stop();
+    _photo_list.clear();
+    _current_index = NO_PHOTO;
+    _pending_index = NO_PHOTO;
+}
+
+/* ====================== Playback control ====================== */
+void PhotoSlideshow::start()
+{
+    scanPhotos();  // Refresh the list first
+    _running         = true;
+    _current_index   = NO_PHOTO;
+    _pending_index   = NO_PHOTO;
+    _needs_refresh   = false;
+    _last_refresh_ms = millis_();
+
+    if (!_photo_list.empty()) {
+        // ESP_LOGI(TAG, "Start → displaying first photo...");
+        // displayPhoto(0);
+        // _current_index = 0;
+        // _pending_index = 0;
+        uint8_t b0, b1;
+        hal.rx8130RamRead(RX8130_RAM_INDEX_CURRENT, &b0);
+        hal.rx8130RamRead(RX8130_RAM_INDEX_CURRENT + 1, &b1);
+        _pending_index = (uint16_t)(b1 << 8 | b0);
+    } else {
+        // Starting without photos is fine; nothing will be displayed
+        ESP_LOGW(TAG, "Start → No photos found, running in background...");
+    }
+}
+
+void PhotoSlideshow::stop()
+{
+    _running       = false;
+    _needs_refresh = false;
+}
+
+/* ====================== Manual navigation ====================== */
+void PhotoSlideshow::next()
+{
+    // Rescan first; return immediately if there are no photos to avoid division by zero
+    if (!rescanAndClamp()) {
+        hal.statusEventSend(OPERATION_EVENT_FAILED);
+        return;
+    }
+    hal.statusEventSend(OPERATION_EVENT_SUCCESS);
+    uint16_t new_index = 0;
+    if (_pending_index == NO_PHOTO) {
+        new_index = 0;  // The screen was blank before, so show the first photo directly
+    } else {
+        new_index = (_pending_index + 1) % (uint16_t)_photo_list.size();
+    }
+    requestRefresh(new_index);
+}
+
+void PhotoSlideshow::prev()
+{
+    if (!rescanAndClamp()) {
+        hal.statusEventSend(OPERATION_EVENT_FAILED);
+        return;
+    }
+    hal.statusEventSend(OPERATION_EVENT_SUCCESS);
+
+    uint16_t photo_count = (uint16_t)_photo_list.size();
+    uint16_t new_index   = 0;
+    if (_pending_index == NO_PHOTO) {
+        new_index = 0;
+    } else {
+        new_index = (_pending_index == 0) ? (photo_count - 1) : (_pending_index - 1);
+    }
+    requestRefresh(new_index);
+}
+
+void PhotoSlideshow::goTo(uint16_t index)
+{
+    if (!rescanAndClamp()) return;
+    index = index % (uint16_t)_photo_list.size();
+    requestRefresh(index);
+}
+
+void PhotoSlideshow::setInterval(uint8_t min)
+{
+    _interval_min = min;
+}
+void PhotoSlideshow::setSettleTime(uint32_t ms)
+{
+    _settle_ms = ms;
+}
+
+bool PhotoSlideshow::runOneShotRefresh()
+{
+    if (!rescanAndClamp()) {
+        ESP_LOGW(TAG, "One-shot local refresh skipped because no photos were found");
+        return false;
+    }
+
+    uint8_t b0 = 0;
+    uint8_t b1 = 0;
+    hal.rx8130RamRead(RX8130_RAM_INDEX_CURRENT, &b0);
+    hal.rx8130RamRead(RX8130_RAM_INDEX_CURRENT + 1, &b1);
+    uint16_t stored_index = (uint16_t)(b1 << 8 | b0);
+    _pending_index        = stored_index;
+    clampIndices();
+
+    uint16_t next_index = (_pending_index == NO_PHOTO) ? 0 : ((_pending_index + 1) % (uint16_t)_photo_list.size());
+    ESP_LOGI(TAG, "One-shot → [%d/%d]: %s", next_index + 1, (int)_photo_list.size(), _photo_list[next_index].c_str());
+    displayPhoto(next_index);
+    _current_index   = next_index;
+    _pending_index   = next_index;
+    _needs_refresh   = false;
+    _last_refresh_ms = millis_();
+    hal.rx8130RamWrite(RX8130_RAM_INDEX_CURRENT, (uint8_t)(_pending_index & 0xFF));
+    hal.rx8130RamWrite(RX8130_RAM_INDEX_CURRENT + 1, (uint8_t)(_pending_index >> 8) & 0xFF);
+    return true;
+}
+
+void PhotoSlideshow::toggleRotation()
+{
+    if (!rescanAndClamp()) {
+        hal.statusEventSend(OPERATION_EVENT_FAILED);
+        return;
+    }
+    hal.statusEventSend(OPERATION_EVENT_SUCCESS);
+
+    // Toggle between Rotation(0) and Rotation(3)
+    uint8_t current = hal.Canvas->getRotation();
+    uint8_t next    = (current == 0) ? 1 : 0;
+
+    hal.settingsLock();
+    hal.settings.rotation = next;
+    hal.settingsUnlock();
+
+    hal.Canvas->setRotation(next);
+
+    // Update screen size
+    _scr_w = hal.Canvas->width();
+    _scr_h = hal.Canvas->height();
+
+    ESP_LOGI(TAG, "Toggle rotation to %d", next);
+    ESP_LOGI(TAG, "Toggle screen size to %d, %d", _scr_w, _scr_h);
+
+    // Redisplay the current photo
+    displayPhoto(_pending_index);
+}
+
+void PhotoSlideshow::syncSettings()
+{
+    hal.settingsLock();
+    uint8_t target_interval =
+        (hal.settings.auto_slideshow && hal.settings.interval_minutes > 0) ? (uint8_t)hal.settings.interval_minutes : 0;
+    uint8_t target_rotation = hal.settings.rotation;
+    hal.settingsUnlock();
+
+    if (_interval_min != target_interval) {
+        _interval_min = target_interval;
+    }
+
+    if (hal.Canvas->getRotation() != target_rotation) {
+        hal.Canvas->setRotation(target_rotation);
+        _scr_w = hal.Canvas->width();
+        _scr_h = hal.Canvas->height();
+    }
+}
+
+/* ====================== Main loop ====================== */
+void PhotoSlideshow::update()
+{
+    if (!_running) return;
+
+    syncSettings();
+
+    // If an SD card is inserted and FLASH storage is currently in use, switch to the SD card
+    // If no SD card is inserted and SD storage is currently in use, switch to FLASH storage
+    if (hal.isSDCardInserted()) {
+        if (hal_storage_get_media() != APP_STORAGE_MEDIA_SDMMC) {
+            hal_storage_switch(APP_STORAGE_MEDIA_SDMMC);
+            _pending_index = NO_PHOTO;
+            hal.rx8130RamWrite(RX8130_RAM_INDEX_CURRENT, 0);
+            hal.rx8130RamWrite(RX8130_RAM_INDEX_CURRENT + 1, 0);
+        }
+    } else {
+        if (hal_storage_get_media() != APP_STORAGE_MEDIA_SPIFLASH) {
+            hal_storage_switch(APP_STORAGE_MEDIA_SPIFLASH);
+            _pending_index = NO_PHOTO;
+            hal.rx8130RamWrite(RX8130_RAM_INDEX_CURRENT, 0);
+            hal.rx8130RamWrite(RX8130_RAM_INDEX_CURRENT + 1, 0);
+        }
+    }
+
+    // Check buttons
+    handleButtons();
+
+    // Check whether the settle delay has elapsed
+    if (_needs_refresh) {
+        if (millis_() - _last_button_ms >= _settle_ms) {
+            if (!rescanAndClamp()) {
+                _needs_refresh = false;
+                ESP_LOGW(TAG, "No photos after rescan, cancel refresh");
+                return;
+            }
+            // Skip refresh only when something is already displayed (!= NO_PHOTO) and the index is unchanged
+            if (_pending_index == _current_index && _current_index != NO_PHOTO) {
+                _needs_refresh = false;
+                ESP_LOGI(TAG, "After rescan, pending == current, skip refresh");
+                return;
+            }
+            ESP_LOGI(TAG, "Settle OK → refreshing [%d/%d]: %s", _pending_index + 1, (int)_photo_list.size(),
+                     _photo_list[_pending_index].c_str());
+            displayPhoto(_pending_index);
+            _current_index   = _pending_index;
+            _needs_refresh   = false;
+            _last_refresh_ms = millis_();
+        }
+        return;
+    }
+
+    // ③ Auto slideshow (_interval_min > 0 and no refresh is pending)
+    if (_interval_min > 0) {
+        uint32_t interval_ms = (uint32_t)_interval_min * 60000UL;
+        if (millis_() - _last_refresh_ms >= interval_ms) {
+            // Always reset the time first to avoid scanning the SD card every frame when the directory is empty
+            _last_refresh_ms = millis_();
+
+            if (!rescanAndClamp()) {
+                ESP_LOGD(TAG, "Auto: no photos, skip this interval");
+                return;
+            }
+
+            // If the screen was blank before, show index 0; otherwise show the next photo
+            uint16_t next_index =
+                (_current_index == NO_PHOTO) ? 0 : ((_current_index + 1) % (uint16_t)_photo_list.size());
+
+            ESP_LOGI(TAG, "Auto → [%d/%d]: %s", next_index + 1, (int)_photo_list.size(),
+                     _photo_list[next_index].c_str());
+            displayPhoto(next_index);
+            _current_index = next_index;
+            _pending_index = next_index;
+        }
+    }
+}
+
+/* ====================== Status queries ====================== */
+uint16_t PhotoSlideshow::getTotal() const
+{
+    return (uint16_t)_photo_list.size();
+}
+uint16_t PhotoSlideshow::getCurrentIndex() const
+{
+    return (_current_index == NO_PHOTO) ? 0 : _current_index;
+}
+uint16_t PhotoSlideshow::getPendingIndex() const
+{
+    return (_pending_index == NO_PHOTO) ? 0 : _pending_index;
+}
+bool PhotoSlideshow::isRunning() const
+{
+    return _running;
+}
+bool PhotoSlideshow::isWaitingSettle() const
+{
+    return _needs_refresh;
+}
+
+/* ====================== Button handling ====================== */
+void PhotoSlideshow::handleButtons()
+{  // A 523
+    bool button_a_pressed  = M5.BtnA.wasPressed();
+    bool button_a_released = M5.BtnA.wasClicked();
+    bool button_c_pressed  = M5.BtnC.wasPressed();
+    bool button_b_pressed  = M5.BtnB.wasPressed();
+    if (button_c_pressed) audio::play_tone_from_midi(119, 0.08);
+    if (button_b_pressed) audio::play_tone_from_midi(120, 0.08);
+    if (button_a_pressed) audio::play_tone_from_midi(121, 0.08);
+    if (button_a_released && !_last_btn_a) toggleRotation();
+    if (button_c_pressed && !_last_btn_c) prev();
+    if (button_b_pressed && !_last_btn_b) next();
+    _last_btn_c = button_c_pressed;
+    _last_btn_b = button_b_pressed;
+    _last_btn_a = button_a_released;
+}
+
+/* ============== Rescan ============== */
+bool PhotoSlideshow::rescanAndClamp()
+{
+    bool has_photos = scanPhotos();
+    clampIndices();
+    if (!has_photos) {
+        ESP_LOGD(TAG, "Rescan: directory empty");
+        return false;
+    }
+    return true;
+}
+
+void PhotoSlideshow::clampIndices()
+{
+    uint16_t photo_count = (uint16_t)_photo_list.size();
+    if (photo_count == 0) return;  // Preserve the NO_PHOTO state when empty
+
+    // Only wrap out-of-range indices when not in the NO_PHOTO state
+    if (_current_index != NO_PHOTO && _current_index >= photo_count) {
+        _current_index = _current_index % photo_count;
+    }
+    if (_pending_index != NO_PHOTO && _pending_index >= photo_count) {
+        _pending_index = _pending_index % photo_count;
+    }
+}
+
+/* ================ Settle ================ */
+void PhotoSlideshow::requestRefresh(uint16_t new_index)
+{
+    _pending_index = new_index;
+    // Cancel refresh if we looped back to the current photo and a photo is actually displayed
+    if (_pending_index == _current_index && _current_index != NO_PHOTO) {
+        _needs_refresh = false;
+        ESP_LOGI(TAG, "Back to current [%d/%d], cancel refresh", _current_index + 1, (int)_photo_list.size());
+        return;
+    }
+    _needs_refresh  = true;
+    _last_button_ms = millis_();
+    hal.rx8130RamWrite(RX8130_RAM_INDEX_CURRENT, (uint8_t)(_pending_index & 0xFF));
+    hal.rx8130RamWrite(RX8130_RAM_INDEX_CURRENT + 1, (uint8_t)(_pending_index >> 8) & 0xFF);
+    ESP_LOGI(TAG, "Pending → [%d/%d]: %s", _pending_index + 1, (int)_photo_list.size(),
+             _photo_list[_pending_index].c_str());
+}
+
+/* ====================== Display photo ====================== */
+void PhotoSlideshow::displayPhoto(uint16_t index)
+{
+    int image_width = 0, image_height = 0;
+
+    if (index >= _photo_list.size()) return;
+    const char *path = _photo_list[index].c_str();
+
+    hal_storage_prepare_photo_fs_access();
+    hal_storage_lock();
+    if (!get_image_size_from_file(path, &image_width, &image_height)) {
+        hal_storage_unlock();
+        ESP_LOGE(TAG, "Failed to read image size: %s", path);
+        hal.statusEventSend(OPERATION_EVENT_ERROR_IMAGE_READ);
+        return;
+    }
+
+    float scale = std::min((float)_scr_w / image_width, (float)_scr_h / image_height);
+    int draw_x  = (_scr_w - (int)(image_width * scale)) / 2;
+    int draw_y  = (_scr_h - (int)(image_height * scale)) / 2;
+
+    hal.Canvas->fillScreen(TFT_WHITE);
+
+    const char *fname = strrchr(path, '/');
+    fname             = fname ? fname + 1 : path;
+    bool use_fastest  = (strncmp(fname, "imageN", 6) == 0);
+    if (use_fastest) {
+        M5.Display.setEpdMode(epd_mode_t::epd_fastest);
+    }
+
+    const char *dot = strrchr(path, '.');
+    if (dot) {
+        if (strcasecmp(dot, ".jpg") == 0 || strcasecmp(dot, ".jpeg") == 0) {
+            hal.Canvas->drawJpgFile(path, draw_x, draw_y, 0, 0, 0, 0, scale, scale);
+            hal.statusEventSend(OPERATION_EVENT_REFRESH_START);
+            app_manager_set_refresh_in_progress(true);
+            hal.Canvas->pushSprite(0, 0);
+            app_manager_set_refresh_in_progress(false);
+            hal.statusEventSend(OPERATION_EVENT_REFRESH_COMPLETE);
+        } else if (strcasecmp(dot, ".bmp") == 0) {
+            hal.Canvas->drawBmpFile(path, draw_x, draw_y, 0, 0, 0, 0, scale, scale);
+            hal.statusEventSend(OPERATION_EVENT_REFRESH_START);
+            app_manager_set_refresh_in_progress(true);
+            hal.Canvas->pushSprite(0, 0);
+            app_manager_set_refresh_in_progress(false);
+            hal.statusEventSend(OPERATION_EVENT_REFRESH_COMPLETE);
+        } else if (strcasecmp(dot, ".png") == 0) {
+            hal.Canvas->drawPngFile(path, draw_x, draw_y, 0, 0, 0, 0, scale, scale);
+            hal.statusEventSend(OPERATION_EVENT_REFRESH_START);
+            app_manager_set_refresh_in_progress(true);
+            hal.Canvas->pushSprite(0, 0);
+            app_manager_set_refresh_in_progress(false);
+            hal.statusEventSend(OPERATION_EVENT_REFRESH_COMPLETE);
+        }
+    }
+
+    if (use_fastest) {
+        M5.Display.setEpdMode(epd_mode_t::epd_quality);
+    }
+    hal_storage_unlock();
+}
+
+/* ====================== Display photo by path ====================== */
+void PhotoSlideshow::displayPhotoByPath(const char *path)
+{
+    if (!rescanAndClamp()) {
+        hal.statusEventSend(OPERATION_EVENT_FAILED);
+        return;
+    }
+    for (uint16_t photo_index = 0; photo_index < _photo_list.size(); photo_index++) {
+        if (_photo_list[photo_index] == path) {
+            displayPhoto(photo_index);
+            _current_index = photo_index;
+            _pending_index = photo_index;
+            ESP_LOGI(TAG, "Display by path: [%d/%d]: %s", photo_index + 1, (int)_photo_list.size(), path);
+            return;
+        }
+    }
+    ESP_LOGW(TAG, "Photo not found in list: %s", path);
+}
+
+/* ====================== File scan ====================== */
+bool PhotoSlideshow::scanPhotos()
+{
+    _photo_list.clear();
+    hal_storage_prepare_photo_fs_access();
+    hal_storage_lock();
+    DIR *dir = opendir(_dir_path);
+    if (!dir) {
+        hal_storage_unlock();
+        ESP_LOGW(TAG, "Cannot open dir: %s", _dir_path);
+        return false;
+    }
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != nullptr) {
+        if (_photo_list.size() >= MAX_PHOTOS) break;
+        if (entry->d_type == DT_DIR) continue;
+        if (isImageFile(entry->d_name)) {
+            std::string full = std::string(_dir_path) + "/" + entry->d_name;
+            _photo_list.push_back(full);
+        }
+    }
+    closedir(dir);
+    hal_storage_unlock();
+    std::sort(_photo_list.begin(), _photo_list.end());
+    ESP_LOGD(TAG, "Scanned %d photos in %s", (int)_photo_list.size(), _dir_path);
+    return !_photo_list.empty();
+}
+
+bool PhotoSlideshow::isImageFile(const char *filename)
+{
+    const char *dot = strrchr(filename, '.');
+    if (!dot) return false;
+    return strcasecmp(dot, ".jpg") == 0 || strcasecmp(dot, ".jpeg") == 0 || strcasecmp(dot, ".bmp") == 0 ||
+           strcasecmp(dot, ".png") == 0;
+}
