@@ -54,7 +54,7 @@ extern const char _binary_index_html_end[] asm("_binary_index_html_end");
 
 #define SCAN_TIMEOUT_MS    (8000)
 #define CONNECT_TIMEOUT_MS (15000)
-#define UPLOAD_MAX_SIZE    (512 * 1024)
+#define UPLOAD_MAX_SIZE    (2 * 1024 * 1024)
 #define PHOTOS_PER_PAGE    (16)
 #define MAX_PHOTOS         (500)
 
@@ -138,7 +138,8 @@ static bool url_encode_component(const char *src, char *dst, size_t dst_sz)
 
     for (size_t i = 0; src[i]; i++) {
         unsigned char c = (unsigned char)src[i];
-        bool safe       = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' ||
+
+        bool safe = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' ||
                     c == '_' || c == '.' || c == '~';
 
         if (safe) {

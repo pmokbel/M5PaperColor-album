@@ -21,7 +21,7 @@
 #define WIFI_AP_AUTO_OFF_TIMEOUT_MIN (10)
 
 /** @brief Current application software version. */
-#define APP_SW_VERSION (0x01)
+#define APP_SW_VERSION "1.0.1"
 
 /**
  * @brief Displays the boot guide image.

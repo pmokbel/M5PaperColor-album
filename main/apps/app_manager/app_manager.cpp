@@ -689,7 +689,7 @@ static void app_task(void* param)
 // ---- Startup ----
 esp_err_t app_manager_start()
 {
-    ESP_LOGI(g_tag, "Software version: V%u", APP_SW_VERSION);
+    ESP_LOGI(g_tag, "Software version: V%s", APP_SW_VERSION);
 
     // ── First boot guide image ──
     nvs_handle_t h;

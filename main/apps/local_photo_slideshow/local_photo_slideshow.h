@@ -158,6 +158,8 @@ private:
     bool _last_btn_c          = false;
     bool _last_btn_b          = false;
     bool _last_btn_a          = false;
+    bool _last_sd_inserted    = false;
+    bool _sd_fallback_locked  = false;
 
     /* ---- Internal helpers ---- */
     void syncSettings();

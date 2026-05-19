@@ -134,6 +134,7 @@ private:
     static void LedStatusIndicateTask(void* task_parameters);
     static constexpr m5pm1_gpio_num_t SD_DEC            = M5PM1_GPIO_NUM_1;
     static constexpr m5pm1_gpio_num_t EPD_EN            = M5PM1_GPIO_NUM_0;
+    static constexpr m5pm1_gpio_num_t SD_DET_EN         = M5PM1_GPIO_NUM_4;
     static constexpr gpio_num_t SYS_SCL_PIN             = GPIO_NUM_2;
     static constexpr gpio_num_t SYS_SDA_PIN             = GPIO_NUM_3;
     TaskHandle_t _led_status_indicate_task_handle       = nullptr;

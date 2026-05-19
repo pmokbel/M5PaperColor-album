@@ -22,8 +22,76 @@
 
 static const char *TAG = "Slideshow";
 
-// Define an invalid index to represent “no photo is currently displayed”
+static constexpr uint8_t RX8130_RAM_INDEX_CURRENT_STORAGE = 0;
+
+// Define an invalid index to represent "no photo is currently displayed"
 #define NO_PHOTO 0xFFFF
+
+namespace {
+
+void resetPhotoIndexState(uint16_t &pending_index)
+{
+    pending_index = NO_PHOTO;
+    hal.rx8130RamWrite(RX8130_RAM_INDEX_CURRENT_STORAGE, 0);
+    hal.rx8130RamWrite(RX8130_RAM_INDEX_CURRENT_STORAGE + 1, 0);
+}
+
+esp_err_t selectStorageMedia(bool sd_inserted, bool &sd_fallback_locked)
+{
+    sd_fallback_locked = false;
+
+    if (sd_inserted) {
+        esp_err_t ret = hal_storage_init(APP_STORAGE_MEDIA_SDMMC);
+        if (ret == ESP_OK) {
+            return ESP_OK;
+        }
+        sd_fallback_locked = true;
+        ESP_LOGW(TAG, "SD init failed, fallback to SPI flash: %s", esp_err_to_name(ret));
+    }
+
+    return hal_storage_init(APP_STORAGE_MEDIA_SPIFLASH);
+}
+
+void ensureStorageMedia(bool sd_inserted, bool &last_sd_inserted, bool &sd_fallback_locked, uint16_t &pending_index)
+{
+    if (!sd_inserted) {
+        last_sd_inserted   = false;
+        sd_fallback_locked = false;
+    } else if (!last_sd_inserted) {
+        last_sd_inserted   = true;
+        sd_fallback_locked = false;
+    }
+
+    hal_storage_media_t target_media =
+        (sd_inserted && !sd_fallback_locked) ? APP_STORAGE_MEDIA_SDMMC : APP_STORAGE_MEDIA_SPIFLASH;
+    if (hal_storage_get_media() == target_media) {
+        return;
+    }
+
+    esp_err_t ret = hal_storage_switch(target_media);
+    if (ret == ESP_OK) {
+        resetPhotoIndexState(pending_index);
+        return;
+    }
+
+    if (!sd_inserted) {
+        ESP_LOGW(TAG, "SPI flash switch failed: %s", esp_err_to_name(ret));
+        return;
+    }
+
+    sd_fallback_locked = true;
+    ESP_LOGW(TAG, "SD switch failed, fallback to SPI flash: %s", esp_err_to_name(ret));
+    if (hal_storage_get_media() != APP_STORAGE_MEDIA_SPIFLASH) {
+        esp_err_t fallback_ret = hal_storage_switch(APP_STORAGE_MEDIA_SPIFLASH);
+        if (fallback_ret != ESP_OK) {
+            ESP_LOGE(TAG, "SPI flash fallback switch failed: %s", esp_err_to_name(fallback_ret));
+            return;
+        }
+    }
+    resetPhotoIndexState(pending_index);
+}
+
+}  // namespace
 
 /* ---------- millis() ---------- */
 static inline uint32_t millis_()
@@ -43,19 +111,15 @@ bool PhotoSlideshow::init(const char *dir_path, uint8_t interval_min)
     _needs_refresh              = false;
     _last_btn_c                 = false;
     _last_btn_b                 = false;
+    _last_sd_inserted           = hal.isSDCardInserted();
+    _sd_fallback_locked         = false;
     _photo_list.clear();
     _scr_w = hal.Canvas->width();
     _scr_h = hal.Canvas->height();
 
     M5.Speaker.setVolume(120);
 
-    if (hal.isSDCardInserted()) {
-        // Use the SD card at startup
-        hal_storage_init(APP_STORAGE_MEDIA_SDMMC);
-    } else {
-        // Use APP storage at startup
-        hal_storage_init(APP_STORAGE_MEDIA_SPIFLASH);
-    }
+    selectStorageMedia(_last_sd_inserted, _sd_fallback_locked);
 
     scanPhotos();
     hal.statusEventSend(OPERATION_EVENT_STARTUP_SUCCESS);
@@ -238,23 +302,7 @@ void PhotoSlideshow::update()
 
     syncSettings();
 
-    // If an SD card is inserted and FLASH storage is currently in use, switch to the SD card
-    // If no SD card is inserted and SD storage is currently in use, switch to FLASH storage
-    if (hal.isSDCardInserted()) {
-        if (hal_storage_get_media() != APP_STORAGE_MEDIA_SDMMC) {
-            hal_storage_switch(APP_STORAGE_MEDIA_SDMMC);
-            _pending_index = NO_PHOTO;
-            hal.rx8130RamWrite(RX8130_RAM_INDEX_CURRENT, 0);
-            hal.rx8130RamWrite(RX8130_RAM_INDEX_CURRENT + 1, 0);
-        }
-    } else {
-        if (hal_storage_get_media() != APP_STORAGE_MEDIA_SPIFLASH) {
-            hal_storage_switch(APP_STORAGE_MEDIA_SPIFLASH);
-            _pending_index = NO_PHOTO;
-            hal.rx8130RamWrite(RX8130_RAM_INDEX_CURRENT, 0);
-            hal.rx8130RamWrite(RX8130_RAM_INDEX_CURRENT + 1, 0);
-        }
-    }
+    ensureStorageMedia(hal.isSDCardInserted(), _last_sd_inserted, _sd_fallback_locked, _pending_index);
 
     // Check buttons
     handleButtons();

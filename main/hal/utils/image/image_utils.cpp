@@ -7,6 +7,7 @@
 #include <cstring>
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
 
 static bool get_bmp_size_mem(const uint8_t *data, size_t len, int *width, int *height)
 {
@@ -82,18 +83,28 @@ bool get_image_size_from_file(const char *path, int *width, int *height)
     FILE *f = fopen(path, "rb");
     if (!f) return false;
 
-    uint8_t buf[2048];
-    size_t n = fread(buf, 1, sizeof(buf), f);
+    constexpr size_t BUF_SIZE = 65536;
+    uint8_t *buf              = (uint8_t *)malloc(BUF_SIZE);
+    if (!buf) {
+        fclose(f);
+        return false;
+    }
+    size_t n = fread(buf, 1, BUF_SIZE, f);
     fclose(f);
 
-    if (n == 0) return false;
-
-    if (strcasecmp(dot, ".jpg") == 0 || strcasecmp(dot, ".jpeg") == 0) {
-        return get_jpg_size_mem(buf, n, width, height);
-    } else if (strcasecmp(dot, ".bmp") == 0) {
-        return get_bmp_size_mem(buf, n, width, height);
-    } else if (strcasecmp(dot, ".png") == 0) {
-        return get_png_size_mem(buf, n, width, height);
+    if (n == 0) {
+        free(buf);
+        return false;
     }
-    return false;
+
+    bool ok = false;
+    if (strcasecmp(dot, ".jpg") == 0 || strcasecmp(dot, ".jpeg") == 0) {
+        ok = get_jpg_size_mem(buf, n, width, height);
+    } else if (strcasecmp(dot, ".bmp") == 0) {
+        ok = get_bmp_size_mem(buf, n, width, height);
+    } else if (strcasecmp(dot, ".png") == 0) {
+        ok = get_png_size_mem(buf, n, width, height);
+    }
+    free(buf);
+    return ok;
 }

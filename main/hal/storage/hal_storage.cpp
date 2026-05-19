@@ -158,9 +158,46 @@ static void usb_event_cb(tinyusb_event_t *event, void *arg)
     }
 }
 
-static void _mount(void)
+static esp_err_t install_tinyusb_device_driver(void)
 {
-    ESP_ERROR_CHECK(tinyusb_msc_set_storage_mount_point(s_ctx.storage_hdl, TINYUSB_MSC_STORAGE_MOUNT_APP));
+    if (s_ctx.driver_installed) {
+        return ESP_OK;
+    }
+
+    tinyusb_config_t tusb_cfg             = TINYUSB_DEFAULT_CONFIG();
+    tusb_cfg.descriptor.device            = &descriptor_config;
+    tusb_cfg.descriptor.full_speed_config = msc_fs_configuration_desc;
+    tusb_cfg.descriptor.string            = string_desc_arr;
+    tusb_cfg.descriptor.string_count      = sizeof(string_desc_arr) / sizeof(string_desc_arr[0]);
+    tusb_cfg.event_cb                     = usb_event_cb;
+
+    esp_err_t ret = tinyusb_driver_install(&tusb_cfg);
+    if (ret == ESP_OK) {
+        s_ctx.driver_installed = true;
+    }
+    return ret;
+}
+
+static esp_err_t uninstall_tinyusb_device_driver(void)
+{
+    if (!s_ctx.driver_installed) {
+        return ESP_OK;
+    }
+
+    esp_err_t ret = tinyusb_driver_uninstall();
+    if (ret == ESP_OK) {
+        s_ctx.driver_installed = false;
+    }
+    return ret;
+}
+
+static esp_err_t _mount(void)
+{
+    esp_err_t ret = tinyusb_msc_set_storage_mount_point(s_ctx.storage_hdl, TINYUSB_MSC_STORAGE_MOUNT_APP);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to switch storage mount point to APP: %s", esp_err_to_name(ret));
+        return ret;
+    }
 
     ESP_LOGI(TAG, "ls %s:", BASE_PATH);
     DIR *directory_handle = opendir(BASE_PATH);
@@ -168,16 +205,20 @@ static void _mount(void)
     if (!directory_handle) {
         if (errno == ENOENT) {
             ESP_LOGE(TAG, "Directory doesn't exist %s", BASE_PATH);
+            ret = ESP_ERR_NOT_FOUND;
         } else {
             ESP_LOGE(TAG, "Unable to read directory %s", BASE_PATH);
+            ret = ESP_FAIL;
         }
-        return;
+        tinyusb_msc_set_storage_mount_point(s_ctx.storage_hdl, TINYUSB_MSC_STORAGE_MOUNT_USB);
+        return ret;
     }
     struct dirent *entry;
     while ((entry = readdir(directory_handle)) != NULL) {
         printf("  %s\n", entry->d_name);
     }
     closedir(directory_handle);
+    return ESP_OK;
 }
 
 static esp_err_t storage_init_spiflash(wl_handle_t *wl_handle)
@@ -352,26 +393,37 @@ static esp_err_t _bringup(hal_storage_media_t media)
         ESP_LOGE(TAG, "set_storage_callback fail: %s", esp_err_to_name(ret));
         goto err_after_storage;
     }
-    _mount();
-    {
-        tinyusb_config_t tusb_cfg             = TINYUSB_DEFAULT_CONFIG();
-        tusb_cfg.descriptor.device            = &descriptor_config;
-        tusb_cfg.descriptor.full_speed_config = msc_fs_configuration_desc;
-        tusb_cfg.descriptor.string            = string_desc_arr;
-        tusb_cfg.descriptor.string_count      = sizeof(string_desc_arr) / sizeof(string_desc_arr[0]);
-        tusb_cfg.event_cb                     = usb_event_cb;
-        ret                                   = tinyusb_driver_install(&tusb_cfg);
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "tinyusb_driver_install fail: %s", esp_err_to_name(ret));
-            goto err_after_storage;
-        }
-        s_ctx.driver_installed = true;
+    ret = _mount();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Storage mount to APP failed: %s", esp_err_to_name(ret));
+        goto err_after_storage;
     }
+
+    ret = install_tinyusb_device_driver();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "tinyusb_driver_install fail: %s", esp_err_to_name(ret));
+        goto err_after_storage;
+    }
+
     return ESP_OK;
 
 err_after_storage:
+    uninstall_tinyusb_device_driver();
     if (s_ctx.storage_hdl) {
-        tinyusb_msc_delete_storage(s_ctx.storage_hdl);
+        tinyusb_msc_mount_point_t cur;
+        if (tinyusb_msc_get_storage_mount_point(s_ctx.storage_hdl, &cur) == ESP_OK &&
+            cur == TINYUSB_MSC_STORAGE_MOUNT_APP) {
+            esp_err_t unmount_ret =
+                tinyusb_msc_set_storage_mount_point(s_ctx.storage_hdl, TINYUSB_MSC_STORAGE_MOUNT_USB);
+            if (unmount_ret != ESP_OK) {
+                ESP_LOGW(TAG, "Failed to switch storage mount point to USB during cleanup: %s",
+                         esp_err_to_name(unmount_ret));
+            }
+        }
+        esp_err_t delete_ret = tinyusb_msc_delete_storage(s_ctx.storage_hdl);
+        if (delete_ret != ESP_OK) {
+            ESP_LOGW(TAG, "delete_storage during cleanup failed: %s", esp_err_to_name(delete_ret));
+        }
         s_ctx.storage_hdl = NULL;
     }
     s_ctx.storage_created = false;
@@ -409,13 +461,24 @@ esp_err_t hal_storage_switch(hal_storage_media_t media)
 
     esp_err_t ret = ESP_OK;
 
+    ret = uninstall_tinyusb_device_driver();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "tinyusb_driver_uninstall fail: %s", esp_err_to_name(ret));
+        hal_storage_unlock();
+        return ret;
+    }
+
     if (s_ctx.storage_created && s_ctx.storage_hdl) {
         tinyusb_msc_mount_point_t cur;
-        if (tinyusb_msc_get_storage_mount_point(s_ctx.storage_hdl, &cur) == ESP_OK) {
-            if (cur != TINYUSB_MSC_STORAGE_MOUNT_APP) {
-                tinyusb_msc_set_storage_mount_point(s_ctx.storage_hdl, TINYUSB_MSC_STORAGE_MOUNT_APP);
-                vTaskDelay(pdMS_TO_TICKS(100));
+        if (tinyusb_msc_get_storage_mount_point(s_ctx.storage_hdl, &cur) == ESP_OK &&
+            cur == TINYUSB_MSC_STORAGE_MOUNT_APP) {
+            ret = tinyusb_msc_set_storage_mount_point(s_ctx.storage_hdl, TINYUSB_MSC_STORAGE_MOUNT_USB);
+            if (ret != ESP_OK) {
+                ESP_LOGE(TAG, "switch mount point to USB fail: %s", esp_err_to_name(ret));
+                hal_storage_unlock();
+                return ret;
             }
+            vTaskDelay(pdMS_TO_TICKS(100));
         }
 
         ret = tinyusb_msc_delete_storage(s_ctx.storage_hdl);
@@ -484,7 +547,55 @@ esp_err_t hal_storage_switch(hal_storage_media_t media)
         ESP_LOGW(TAG, "set_storage_callback fail: %s", esp_err_to_name(ret));
     }
 
-    _mount();
+    ret = _mount();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Storage mount to APP failed after switch: %s", esp_err_to_name(ret));
+        if (s_ctx.storage_hdl) {
+            esp_err_t delete_ret = tinyusb_msc_delete_storage(s_ctx.storage_hdl);
+            if (delete_ret != ESP_OK) {
+                ESP_LOGW(TAG, "delete_storage after mount failure failed: %s", esp_err_to_name(delete_ret));
+            }
+            s_ctx.storage_hdl = NULL;
+        }
+        s_ctx.storage_created = false;
+        if (media == APP_STORAGE_MEDIA_SPIFLASH) {
+            storage_deinit_spiflash();
+        } else {
+            storage_deinit_sdmmc();
+        }
+        hal_storage_unlock();
+        return ret;
+    }
+
+    ret = install_tinyusb_device_driver();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "tinyusb_driver_install fail after switch: %s", esp_err_to_name(ret));
+        if (s_ctx.storage_hdl) {
+            tinyusb_msc_mount_point_t cur;
+            if (tinyusb_msc_get_storage_mount_point(s_ctx.storage_hdl, &cur) == ESP_OK &&
+                cur == TINYUSB_MSC_STORAGE_MOUNT_APP) {
+                esp_err_t unmount_ret =
+                    tinyusb_msc_set_storage_mount_point(s_ctx.storage_hdl, TINYUSB_MSC_STORAGE_MOUNT_USB);
+                if (unmount_ret != ESP_OK) {
+                    ESP_LOGW(TAG, "Failed to switch storage mount point to USB during install cleanup: %s",
+                             esp_err_to_name(unmount_ret));
+                }
+            }
+            esp_err_t delete_ret = tinyusb_msc_delete_storage(s_ctx.storage_hdl);
+            if (delete_ret != ESP_OK) {
+                ESP_LOGW(TAG, "delete_storage after install failure failed: %s", esp_err_to_name(delete_ret));
+            }
+            s_ctx.storage_hdl = NULL;
+        }
+        s_ctx.storage_created = false;
+        if (media == APP_STORAGE_MEDIA_SPIFLASH) {
+            storage_deinit_spiflash();
+        } else {
+            storage_deinit_sdmmc();
+        }
+        hal_storage_unlock();
+        return ret;
+    }
     hal_storage_unlock();
     return ESP_OK;
 }

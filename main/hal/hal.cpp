@@ -178,6 +178,8 @@ void Hal::init()
     s_spi_bus_inited = true;
     pm1.begin(&M5.In_I2C, M5PM1_DEFAULT_ADDR, M5PM1_I2C_FREQ_100K);
     pm1.setI2cConfig(0);
+    pm1.pinMode(SD_DET_EN, OUTPUT);
+    pm1.digitalWrite(SD_DET_EN, HIGH);
     pm1.pinMode(SD_DEC, INPUT_PULLUP);
     pm1.pinMode(EPD_EN, OUTPUT);
     pm1.digitalWrite(EPD_EN, HIGH);

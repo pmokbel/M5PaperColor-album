@@ -1592,6 +1592,10 @@ let modeList = [];
 let confirmCallback = null;
 let photoPage = 1;
 let photoTotalPages = 1;
+let photoPageCache = {};    // { [page]: { total_pages, names: [...] } }
+let photoCache = {};        // { [name]: { name, url } }
+let photoTotal = 0;
+let photoPageLoading = false;
 
 // ==================== API Helper ====================
 async function apiCall(method, url, body, isFormData) {
@@ -1600,15 +1604,23 @@ async function apiCall(method, url, body, isFormData) {
     opts.body = isFormData ? body : JSON.stringify(body);
     if (!isFormData) opts.headers = { "Content-Type": "application/json" };
   }
+  let res;
   try {
-    const res = await fetch(url, opts);
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.message || `HTTP ${res.status}`);
-    return data;
+    res = await fetch(url, opts);
   } catch (e) {
-    if (e.message && !e.message.startsWith("HTTP")) throw e;
+    throw e;
+  }
+
+  let data = null;
+  try {
+    data = await res.json();
+  } catch (e) {
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     throw new Error("Network request failed");
   }
+
+  if (!res.ok) throw new Error(data.message || `HTTP ${res.status}`);
+  return data;
 }
 
 // ==================== Toast ====================
@@ -2654,11 +2666,6 @@ function applyModeConfig() {
   requestAnimationFrame(() => {
     rerenderCompositionLayout(false);
   });
-
-  if (currentMode === "mode_1") {
-    photoPage = 1;
-    loadPhotoList(photoPage);
-  }
 }
 
 // ==================== Unified Settings Modal ====================
@@ -3271,10 +3278,17 @@ async function uploadOnly() {
     formData.append("action", "upload_only");
     formData.append("algorithm", displayMode);
     showToast("Uploading...", "");
-    await apiCall("POST", "/api/photos/upload", formData, true);
+    const resp = await apiCall("POST", "/api/photos/upload", formData, true);
     showToast("Uploaded successfully", "success");
-    photoPage = 9999;
-    loadPhotoList(photoPage);
+    if (displayMode === "nearest" && resp && resp.name) {
+      // Nearest photo inserts at front — all page boundaries shift, clear page cache
+      photoPageCache = {};
+      const m = resp.name.match(/^imageN0*(\d+)/i);
+      if (m) photoPage = Math.ceil(Number(m[1]) / getPhotoPerPage());
+    } else {
+      photoPage = 9999;
+    }
+    await loadPhotoList(photoPage, /* forceRefresh */ true);
     loadStorage();
   } catch(e) { showToast(e.message, "error"); }
 }
@@ -3300,10 +3314,18 @@ async function uploadWithDisplay() {
     formData.append("algorithm", displayMode);
 
     showToast("Uploading...", "");
-    await apiCall("POST", "/api/photos/upload", formData, true);
+    const resp = await apiCall("POST", "/api/photos/upload", formData, true);
     showToast("Uploaded & display updated", "success");
-    photoPage = 9999;
-    loadPhotoList(photoPage);
+    // Compute which page the new photo landed on from its name
+    if (displayMode === "nearest" && resp && resp.name) {
+      // Nearest photo inserts at front — all pages shift, clear page cache
+      photoPageCache = {};
+      const m = resp.name.match(/^imageN0*(\d+)/i);
+      if (m) photoPage = Math.ceil(Number(m[1]) / getPhotoPerPage());
+    } else {
+      photoPage = 9999; // Dither appends at end, only last page changes
+    }
+    await loadPhotoList(photoPage, /* forceRefresh */ true);
     loadStorage();
   } catch(e) { showToast(e.message, "error"); }
 }
@@ -3315,20 +3337,43 @@ function getPhotoPerPage() {
   return 12;
 }
 
-async function loadPhotoList(page) {
+async function loadPhotoList(page, forceRefresh = false) {
   page = page || photoPage;
   const perPage = getPhotoPerPage();
+
+  // Serve from cache if this page was loaded before
+  if (!forceRefresh && photoPageCache[page]) {
+    photoPage = page;
+    renderPhotoGridFromNames(photoPageCache[page]);
+    renderPagination();
+    return;
+  }
+
+  photoPageLoading = true;
   try {
     const data = await apiCall("GET", `/api/photos/list?page=${page}&per_page=${perPage}`);
-    photoPage = data.page;
-    photoTotalPages = data.total_pages;
-    renderPhotoGrid(data.photos, data.total);
-    renderPagination();
+    if (data.page === page || page === photoPage) {
+      // Store per-photo data globally
+      const names = [];
+      data.photos.forEach(p => {
+        photoCache[p.name] = { name: p.name, url: p.url };
+        names.push(p.name);
+      });
+      photoPageCache[data.page] = names;
+      photoPage = data.page;
+      photoTotalPages = data.total_pages;
+      photoTotal = data.total;
+      renderPhotoGridFromNames(names);
+      renderPagination();
+    }
   } catch(e) { /* silent */ }
+  photoPageLoading = false;
 }
 
 function goPhotoPage(page) {
   if (page < 1 || page > photoTotalPages) return;
+  photoPage = page;
+  renderPagination();
   loadPhotoList(page);
 }
 
@@ -3348,25 +3393,26 @@ function renderPagination() {
   next.disabled = photoPage >= photoTotalPages;
 }
 
-function renderPhotoGrid(photos, total) {
+function renderPhotoGridFromNames(names) {
   const grid = document.getElementById("photo-grid");
   const count = document.getElementById("photo-count");
-  count.textContent = total > 0 ? `(${total})` : "";
+  count.textContent = photoTotal > 0 ? `(${photoTotal})` : "";
 
-  if (photos.length === 0) {
+  if (names.length === 0) {
     grid.innerHTML = `<div style="color:#999;font-size:14px;text-align:center;grid-column:1/-1;padding:20px;">No photos</div>`;
     return;
   }
-  grid.innerHTML = photos.map(p =>
-    `<div class="photo-card">
+  grid.innerHTML = names.map(name => {
+    const p = photoCache[name] || { name, url: "" };
+    return `<div class="photo-card">
       <img class="thumb" src="${escapeHtml(p.url)}" alt="${escapeHtml(p.name)}" loading="lazy">
       <div class="photo-info"><div class="photo-name" title="${escapeHtml(p.name)}">${escapeHtml(p.name)}</div></div>
       <div class="photo-actions">
         <button class="btn btn-outline btn-sm" onclick="displayPhoto('${escapeAttr(p.name)}')">View</button>
         <button class="btn btn-danger btn-sm" onclick="deletePhoto('${escapeAttr(p.name)}')">Del</button>
       </div>
-    </div>`
-  ).join("");
+    </div>`;
+  }).join("");
 }
 
 function escapeAttr(s) { return s.replace(/'/g, "\\'").replace(/"/g, "&quot;"); }
@@ -3385,13 +3431,23 @@ function deletePhoto(name) {
       await apiCall("DELETE", "/api/photos/delete?name=" + encodeURIComponent(name));
       showToast("Deleted", "success");
       loadStorage();
-      // 如果当前页删空则回退一页
-      if (photoPage > 1) {
+      // Remove only this photo from caches
+      delete photoCache[name];
+      photoTotal = Math.max(0, photoTotal - 1);
+      for (const key of Object.keys(photoPageCache)) {
+        photoPageCache[key] = photoPageCache[key].filter(n => n !== name);
+      }
+      // If the current page is now empty, step back
+      const names = photoPageCache[photoPage];
+      if (names && names.length === 0 && photoPage > 1) {
+        photoPage--;
+      } else if (!names && photoPage > 1) {
+        // Page not cached — check server whether it's now empty
         const perPage = getPhotoPerPage();
         const data = await apiCall("GET", `/api/photos/list?page=${photoPage}&per_page=${perPage}`);
-        if (data.photos.length === 0 && photoPage > 1) { photoPage--; }
+        if (data.photos.length === 0) { photoPage--; }
       }
-      loadPhotoList(photoPage);
+      loadPhotoList(photoPage, /* forceRefresh */ true);
     } catch(e) { showToast(e.message, "error"); }
   });
 }
