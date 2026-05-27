@@ -67,7 +67,11 @@ static inline uint32_t millis_()
 
 static bool mode_requires_sta(AppMode mode)
 {
-    return mode == APP_MODE_EZDATA;
+    // STA is now brought up for any active mode so the LAN-served web portal
+    // stays reachable. Previously this was true only for the (now-removed)
+    // cloud mode and false for LOCAL, which silently prevented LOCAL boots
+    // from connecting STA at all even when saved credentials existed.
+    return mode != APP_MODE_NONE;
 }
 
 static void get_ap_name(char* ap_name, size_t ap_name_size)
@@ -323,15 +327,13 @@ static void switch_app_mode(AppMode target_mode)
     stop_current_mode();
     g_current_mode = target_mode;
 
+    // LOCAL mode no longer disconnects STA: we want the web portal reachable
+    // over LAN. If we ever re-add a cloud-style mode that needs an explicit
+    // STA bring-up, branch on mode_requires_sta() again here.
     if (mode_requires_sta(g_current_mode)) {
         esp_err_t err = ensure_sta_connected_if_needed(false);
         if (err != ESP_OK) {
-            ESP_LOGW(g_tag, "Failed to bring up STA for EZDATA mode: %s", esp_err_to_name(err));
-        }
-    } else {
-        esp_err_t err = disconnect_sta_keep_ap_internal();
-        if (err != ESP_OK) {
-            ESP_LOGW(g_tag, "Failed to disconnect STA while switching to LOCAL mode: %s", esp_err_to_name(err));
+            ESP_LOGW(g_tag, "Failed to bring up STA: %s", esp_err_to_name(err));
         }
     }
 
@@ -728,6 +730,15 @@ esp_err_t app_manager_start()
 
     g_current_mode = app_mode_from_mode_id(hal.settings.current_mode);
 
+    // EzData mode has been removed from this build; coerce stale stored mode_2
+    // (e.g. left over from factory firmware) back to LOCAL so the device boots
+    // into the only remaining mode.
+    if (g_current_mode == APP_MODE_EZDATA) {
+        g_current_mode = APP_MODE_LOCAL;
+        cstring_copy(hal.settings.current_mode, MODE_ID_LOCAL, sizeof(hal.settings.current_mode));
+        hal.settingsSave(SETTING_CURRENT_MODE);
+    }
+
     if (run_rtc_wake_one_shot_cycle()) {
         return ESP_OK;
     }
@@ -737,30 +748,39 @@ esp_err_t app_manager_start()
     }
 
     ESP_ERROR_CHECK(WiFi.begin());
-    ESP_ERROR_CHECK(ensure_apsta_started());
-    if (mode_requires_sta(g_current_mode) && hal.settings.wifi_ssid[0]) {
-        esp_err_t connect_err = ensure_sta_connected_if_needed(true);
-        if (connect_err != ESP_OK) {
-            ESP_LOGW(g_tag, "Initial STA connect failed: %s", esp_err_to_name(connect_err));
-            hal.statusEventSend(OPERATION_EVENT_WAITING_WIFI);
+
+    // STA-first boot policy: if WiFi credentials are saved, try to come up as
+    // STA only. Don't broadcast the (open) softAP unless we actually need it
+    // for onboarding (no creds saved, or STA connect failed). This avoids the
+    // 60–90s window of open AP every boot that the previous "always APSTA, drop
+    // later via auto-off" pattern exposed.
+    bool need_ap = true;
+    if (hal.settings.wifi_ssid[0]) {
+        esp_err_t err = WiFi.setMode(WiFiMode::STA);
+        if (err != ESP_OK) {
+            ESP_LOGW(g_tag, "WiFi.setMode(STA) failed: %s", esp_err_to_name(err));
+        } else {
+            err = WiFi.connect(hal.settings.wifi_ssid, hal.settings.wifi_password, 15000);
+            if (err == ESP_OK) {
+                ESP_LOGI(g_tag, "STA connected, IP=%s — skipping AP bring-up", WiFi.localIP().c_str());
+                need_ap = false;
+            } else {
+                ESP_LOGW(g_tag, "STA connect failed (%s); falling back to AP for re-onboarding",
+                         esp_err_to_name(err));
+                hal.statusEventSend(OPERATION_EVENT_WAITING_WIFI);
+            }
         }
     }
 
-    // Determine whether to show the AP connection QR code
-    bool need_qrcode = false;
-    if (g_current_mode == APP_MODE_LOCAL) {
-        need_qrcode = false;
-    } else if (g_current_mode == APP_MODE_NONE) {
-        // Factory default: no mode selected, show the QR code to guide setup
-        need_qrcode = true;
-    } else if (!hal.settings.wifi_ssid[0]) {
-        // Mode selected but WiFi is not configured
-        need_qrcode = true;
-    } else if (mode_requires_sta(g_current_mode) && !WiFi.isConnected()) {
-        // WiFi is configured but connection failed
-        hal.statusEventSend(OPERATION_EVENT_WAITING_WIFI);
-        need_qrcode = true;
+    if (need_ap) {
+        ESP_ERROR_CHECK(ensure_apsta_started());
     }
+
+    // QR code is the re-onboarding affordance shown on the e-paper. We only
+    // show it when the AP is actually up and intended for setup (no creds, or
+    // STA failed). Once configured and STA connects, the device renders the
+    // photo album instead.
+    bool need_qrcode = need_ap;
 
     if (need_qrcode) {
         char ap_name[32];

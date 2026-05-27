@@ -7,18 +7,25 @@
 
 #include "esp_err.h"
 
-/** @brief Enables or disables automatic shutdown of the Wi-Fi AP. */
+/** @brief Enables or disables automatic shutdown of the Wi-Fi AP.
+ *
+ * The AP is brought up at boot so the user can do initial WiFi onboarding
+ * via the captive portal. Once STA settles on the user's home network and
+ * no phone is currently connected to the AP, the AP is turned off so the
+ * device stops broadcasting an open SSID.
+ */
 #ifndef WIFI_AP_AUTO_OFF_ENABLE
-#define WIFI_AP_AUTO_OFF_ENABLE (0)
+#define WIFI_AP_AUTO_OFF_ENABLE (1)
 #endif
 
 /**
  * @brief Timeout in minutes before the Wi-Fi AP is turned off automatically.
  *
- * The timeout only applies when no client is connected and the STA interface
- * is already connected.
+ * The timeout only applies when no client is connected to the AP and the
+ * STA interface is connected. Kept short so the device drops the AP almost
+ * immediately once it has settled on the user's home Wi-Fi.
  */
-#define WIFI_AP_AUTO_OFF_TIMEOUT_MIN (10)
+#define WIFI_AP_AUTO_OFF_TIMEOUT_MIN (1)
 
 /** @brief Current application software version. */
 #define APP_SW_VERSION "1.0.1"
