@@ -138,13 +138,6 @@ SPDX-License-Identifier: MIT
     }
     @keyframes pulse { from { opacity: 1; } 50% { opacity: 0.3; } to { opacity: 1; } }
 
-    /* ========== EzData Dot ========== */
-    .ezdata-dot {
-      width: 10px; height: 10px; border-radius: 50%; background: #ccc; flex-shrink: 0;
-    }
-    .ezdata-dot.connected { background: #006633; }
-    .ezdata-dot.disconnected { background: #e74c3c; }
-
     /* ========== Battery Icon ========== */
     .battery-wrap {
       display: flex; align-items: center; gap: 5px; flex-shrink: 0;
@@ -1203,39 +1196,6 @@ SPDX-License-Identifier: MIT
     </div>
   </div>
 
-  <!-- ===== Landing Page (To-C Mode Selection) ===== -->
-  <div id="landing-page" class="page active">
-    <div class="page-shell page-shell-fill landing-layout">
-      <h1 class="page-title">MODE</h1>
-      <p class="landing-subtitle">Choose your experience</p>
-      <div class="mode-cards">
-        <div class="card mode-card ap" onclick="selectLandingMode('mode_1')">
-          <div class="mode-card-hero">
-            <div class="mode-card-label">AP</div>
-            <div class="mode-card-arrow">⬇</div>
-          </div>
-          <div class="mode-card-body">
-            <div class="mode-card-main">TIMER or BUTTON</div>
-            <div class="mode-card-sub"><strong>Album</strong></div>
-          </div>
-          <div class="mode-card-caption">Local Photo slideshow</div>
-        </div>
-        <div class="card mode-card internet" onclick="selectLandingMode('mode_2')">
-          <div class="mode-card-hero">
-            <div class="mode-card-label">INTERNET</div>
-            <div class="mode-card-arrow">⬇</div>
-          </div>
-          <div class="mode-card-body">
-            <div class="mode-card-main">TIMER</div>
-            <div class="mode-card-sub"><strong>Download &amp; Show</strong></div>
-          </div>
-          <div class="mode-card-caption">Cloud photo push</div>
-        </div>
-      </div>
-      <div class="copyright-bar">Copyright &copy;2026 M5Stack</div>
-    </div>
-  </div>
-
   <!-- ===== WiFi Configuration Page ===== -->
   <div id="wifi-page" class="page">
     <div class="page-shell page-shell-fill wifi-layout">
@@ -1303,7 +1263,7 @@ SPDX-License-Identifier: MIT
   </div>
 
   <!-- ===== Mode Configuration Page ===== -->
-  <div id="mode-page" class="page">
+  <div id="mode-page" class="page active">
     <div class="page-shell page-shell-fill mode-page-layout">
       <div class="mode-config mode-layout" data-mode="mode_1" id="mode-1-config">
         <div class="card mode-main-card">
@@ -1382,59 +1342,12 @@ SPDX-License-Identifier: MIT
         </div>
       </div>
 
-      <div class="mode-config hidden" data-mode="mode_2" id="mode-2-config">
-        <h1 class="page-title">EzData Push</h1>
-
-        <div class="card">
-          <div class="section-title">Connection Status</div>
-          <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;">
-            <span class="ezdata-dot" id="ezdata-dot"></span>
-            <span style="font-size:14px;" id="ezdata-status-text">Checking...</span>
-          </div>
-          <div class="form-group">
-            <label class="form-label">Device Token</label>
-            <input type="text" class="form-input" id="ezdata-token" readonly placeholder="---">
-          </div>
-        </div>
-
-        <div class="card" id="ezdata-url-card">
-          <div class="section-title">Device Dashboard</div>
-          <p style="font-size:13px;color:#888;margin-bottom:8px;">View temperature, humidity and pushed photos</p>
-          <a id="ezdata-visit-url" href="#" target="_blank" rel="noopener"
-             style="display:block;font-size:13px;color:#336699;text-decoration:underline;">
-          </a>
-        </div>
-
-        <div class="card" id="ezdata-qrcode-card">
-          <div class="section-title">iOS App Binding</div>
-          <p style="font-size:13px;color:#888;margin-bottom:12px;">Scan QR Code with EZData APP</p>
-          <div style="text-align:center;">
-            <div id="ezdata-qrcode-canvas" style="display:inline-flex;padding:10px;background:#fff;border:1px solid #eee;border-radius:8px;"></div>
-          </div>
-        </div>
-      </div>
-
-      <div class="mode-config hidden" data-mode="mode_3" id="mode-3-config">
-        <div class="card" style="text-align:center;padding:60px 20px;color:#999;">
-          Mode 3 &mdash; Coming Soon
-        </div>
-      </div>
     </div>
 
     <div class="bottom-bar">
-      <button class="btn btn-outline" onclick="goToLanding()">Modes</button>
       <button class="btn btn-outline" onclick="showSettings()">Settings</button>
     </div>
     <div class="copyright-bar">Copyright &copy;2026 M5Stack</div>
-  </div>
-
-  <!-- ===== Mode Switch Modal ===== -->
-  <div class="modal-overlay hidden" id="mode-modal" onclick="hideModeSwitch(event)">
-    <div class="modal-sheet" onclick="event.stopPropagation()">
-      <div class="modal-title">Select Mode</div>
-      <div style="display:flex;flex-direction:column;gap:10px;" id="mode-modal-list"></div>
-      <button class="btn btn-outline btn-block" style="margin-top:16px;" onclick="hideModeSwitch()">Cancel</button>
-    </div>
   </div>
 
   <!-- ===== Unified Settings Modal ===== -->
@@ -1645,24 +1558,15 @@ function updateStatusBar(state) {
   const dot = document.getElementById("wifi-dot");
   const text = document.getElementById("wifi-status-text");
   const badge = document.getElementById("mode-badge");
-  const isModeOneView = currentMode === "mode_1" || document.getElementById("landing-page")?.classList.contains("active");
 
   if (!indicator || !dot || !text || !badge) return;
   indicator.classList.remove("is-hidden");
   dot.classList.remove("connected", "connecting");
   badge.classList.add("hidden");
 
-  if (isModeOneView) {
-    indicator.classList.add("is-hidden");
-    text.textContent = "";
-    if (state.mode) {
-      const m = modeList.find(x => x.id === state.mode);
-      badge.textContent = m ? m.name : state.mode;
-      badge.classList.remove("hidden");
-    }
-    return;
-  }
-
+  // Previous build hid the Wi-Fi indicator when running in the AP-only
+  // local mode. With STA now kept up on LAN we always show the connection
+  // state instead.
   if (state.connected) {
     dot.classList.add("connected");
     const ssidText = state.ssid ? ` | ${state.ssid}` : "";
@@ -1708,80 +1612,9 @@ async function refreshStatusBar() {
   }
 }
 
-// ==================== Landing Page Mode Selection ====================
-async function selectLandingMode(modeId) {
-  if (modeList.length === 0) {
-    try {
-      const data = await apiCall("GET", "/api/modes");
-      modeList = data.modes;
-    } catch(e) {
-      showToast("Failed to load modes", "error");
-      return;
-    }
-  }
-
-  if (modeId === "mode_1") {
-    try {
-      showToast("Entering...", "");
-      await apiCall("POST", "/api/mode/switch", { mode: "mode_1" });
-      await new Promise(resolve => setTimeout(resolve, 500));
-      const ready = await fetchDeviceReady();
-      await refreshStatusBar();
-      if (ready.ui && ready.ui.can_enter_mode && ready.mode && ready.mode.current) {
-        enterReadyMode(ready.mode.current);
-        return;
-      }
-      await startPolling({
-        targetMode: "mode_1",
-        successMessage: "Ready! Redirecting...",
-        loadingMessage: "Entering..."
-      });
-    } catch(e) {
-      showToast("Failed to enter Photo Slideshow", "error");
-    }
-  } else if (modeId === "mode_2") {
-    lockedWifiMode = "mode_2";
-    selectedWifiMode = "mode_2";
-    document.getElementById("wifi-mode-group").classList.add("hidden");
-    switchPage("wifi-page");
-    loadWifiModes();
-    loadSetupConfig();
-  }
-}
-
-function configureWifiPageForLockedMode(modeId) {
-  const modeGroup = document.getElementById("wifi-mode-group");
-  const modeLocked = document.getElementById("wifi-mode-locked");
-  const lockedText = document.getElementById("wifi-mode-locked-text");
-  const m = modeList.find(x => x.id === modeId);
-  if (modeGroup) modeGroup.classList.add("hidden");
-  if (modeLocked) modeLocked.classList.remove("hidden");
-  if (lockedText) lockedText.textContent = m ? m.name : modeId;
-}
-
-function resetWifiPageModeLock() {
-  lockedWifiMode = null;
-  const modeGroup = document.getElementById("wifi-mode-group");
-  const modeLocked = document.getElementById("wifi-mode-locked");
-  if (modeGroup) modeGroup.classList.remove("hidden");
-  if (modeLocked) modeLocked.classList.add("hidden");
-  renderWifiModeButtons();
-}
-
-function goToLanding() {
-  lockedWifiMode = null;
-  selectedWifiMode = null;
-  currentMode = null;
-  stopEzdataPolling();
-  resetWifiPageModeLock();
-  switchPage("landing-page");
-  document.getElementById("wifi-status-text").textContent = "";
-  document.getElementById("wifi-dot").className = "wifi-dot";
-  document.getElementById("mode-badge").classList.add("hidden");
-  if (modeList.length === 0) {
-    apiCall("GET", "/api/modes").then(d => { modeList = d.modes; }).catch(() => {});
-  }
-}
+// EzData mode and the landing/mode-picker have been removed.
+// The only mode is mode_1 (local photo album); selectLandingMode/goToLanding/
+// showModeSwitch/switchMode and the wifi-page mode-lock helpers are gone with it.
 
 function hideToast() {
   const el = document.getElementById("toast");
@@ -1811,50 +1644,6 @@ function closeConfirm() {
   confirmCallback = null;
 }
 
-// ==================== Mode Switch ====================
-async function showModeSwitch() {
-  if (modeList.length === 0) {
-    try { const d = await apiCall("GET", "/api/modes"); modeList = d.modes; } catch(e) { return; }
-  }
-  const list = document.getElementById("mode-modal-list");
-  list.innerHTML = modeList.map(m =>
-    `<button class="btn btn-outline btn-block${currentMode===m.id?' selected':''}" data-mode="${m.id}" onclick="switchMode('${m.id}')">${m.name}</button>`
-  ).join("");
-  document.getElementById("mode-modal").classList.remove("hidden");
-}
-function hideModeSwitch(e) {
-  if (e && e.target !== document.getElementById("mode-modal")) return;
-  document.getElementById("mode-modal").classList.add("hidden");
-}
-async function switchMode(modeId) {
-  const m = modeList.find(x => x.id === modeId);
-  if (!m) return;
-
-  document.getElementById("mode-modal").classList.add("hidden");
-  showToast("Switching mode...", "");
-
-  try {
-    const status = await apiCall("GET", "/api/wifi/status");
-    if (status.connected) {
-      try { await apiCall("POST", "/api/mode/switch", { mode: modeId }); } catch(e) {}
-      currentMode = modeId;
-      switchPage("mode-page");
-      showModeConfig(modeId);
-      updateStatusBar({ connected: true, ip: status.ip, mode: modeId });
-      showToast("Switched to " + m.name, "success");
-    } else {
-      lockedWifiMode = null;
-      selectedWifiMode = modeId;
-      resetWifiPageModeLock();
-      switchPage("wifi-page");
-      highlightModeButton(modeId);
-      showToast("Select a mode", "success");
-    }
-  } catch(e) {
-    showToast("Cannot get connection status", "error");
-  }
-}
-
 document.addEventListener("click", e => {
   const wrap = document.getElementById("wifi-mode-select-wrap");
   if (wrap && !wrap.contains(e.target)) {
@@ -1863,15 +1652,15 @@ document.addEventListener("click", e => {
 });
 
 // ==================== Mode Panel Visibility ====================
+// Only mode_1 (local photo album) exists in this build.
 function showModeConfig(modeId) {
-  document.querySelectorAll(".mode-config").forEach(el => {
-    el.classList.add("hidden");
-  });
-  const panel = document.querySelector(`.mode-config[data-mode="${modeId}"]`);
+  document.querySelectorAll(".mode-config").forEach(el => el.classList.add("hidden"));
+  const panel = document.querySelector('.mode-config[data-mode="mode_1"]');
   if (panel) panel.classList.remove("hidden");
-  stopEzdataPolling();
-  if (modeId === "mode_1") { applyModeConfig(); loadModeConfig(); loadPhotoList(); loadStorage(); }
-  if (modeId === "mode_2") { loadMode2Config(); startEzdataPolling(); }
+  applyModeConfig();
+  loadModeConfig();
+  loadPhotoList();
+  loadStorage();
 }
 
 // ==================== WiFi Page ====================
@@ -2683,11 +2472,11 @@ function showSettings() {
   // Pre-fill Wi-Fi & Device (async)
   loadSettingsDeviceInfo();
 
-  // Show/hide Wi-Fi section
+  // Wi-Fi section is always visible: the device runs only the local-album
+  // mode and we still want the user to be able to change Wi-Fi creds from
+  // the LAN-served page.
   const wifiSection = document.getElementById("settings-wifi-section");
-  if (wifiSection) {
-    wifiSection.classList.toggle("hidden", currentMode === "mode_1");
-  }
+  if (wifiSection) wifiSection.classList.remove("hidden");
 
   // Reset Save button
   const saveBtn = document.getElementById("settings-save-btn");
@@ -2771,7 +2560,6 @@ async function saveDisplaySetting(patch) {
       Object.assign(modeConfig, nextModeConfig);
     }
     applyModeConfig();
-    if (currentMode === "mode_2") loadMode2Config();
     showToast("Saved", "success");
   } catch(e) { showToast(e.message, "error"); }
 }
@@ -2889,11 +2677,11 @@ async function executeReset() {
     return;
   }
 
+  // Factory reset will power off the device; just clear local UI state.
+  // Landing page is gone, so we don't navigate anywhere.
   currentMode = null;
   selectedWifiMode = null;
   lockedWifiMode = null;
-  pendingModeEntry = null;
-  switchPage("landing-page");
 }
 
 // ---------- Wi-Fi page: password placeholder ----------
@@ -3481,177 +3269,35 @@ async function updateBattery() {
   } catch(e) {}
 }
 
-// ==================== EzData (Mode 2) ====================
-const EZDATA_WEB_URL = "https://EzData-PaperColor.m5stack.com/__TOKEN__/login";
-const EZDATA_BIND_URL = "https://ezdata-apparea.oss-cn-shenzhen.aliyuncs.com/app/bindingDevice?id=__TOKEN__&deviceType=papercolor";
-let EZDATA_FORCE_TOKEN = "";
-const EZDATA_WEB_BASE = "https://EzData-PaperColor.m5stack.com";
-const EZDATA_QR_LIBRARY_SRC = "https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js";
-
-let ezdataPollTimer = null;
-let ezdataQrLibraryPromise = null;
-
-function loadEzdataQrLibrary() {
-  if (window.qrcode) return Promise.resolve(window.qrcode);
-  if (ezdataQrLibraryPromise) return ezdataQrLibraryPromise;
-  ezdataQrLibraryPromise = new Promise((resolve, reject) => {
-    const script = document.createElement("script");
-    script.src = EZDATA_QR_LIBRARY_SRC;
-    script.async = true;
-    script.onload = () => resolve(window.qrcode);
-    script.onerror = () => reject(new Error("Failed to load QR library"));
-    document.head.appendChild(script);
-  }).catch((error) => {
-    ezdataQrLibraryPromise = null;
-    throw error;
-  });
-  return ezdataQrLibraryPromise;
-}
-
-function buildQrSvgPath(qr) {
-  const path = [];
-  const modules = qr.getModuleCount();
-  for (let row = 0; row < modules; row++) {
-    let start = null;
-    for (let col = 0; col < modules; col++) {
-      const dark = qr.isDark(row, col);
-      if (dark && start === null) start = col;
-      const atEnd = col === modules - 1;
-      if ((!dark || atEnd) && start !== null) {
-        const end = dark && atEnd ? col + 1 : col;
-        path.push(`M${start} ${row}h${end - start}v1H${start}z`);
-        start = null;
-      }
-    }
-  }
-  return path.join("");
-}
-
-function renderQrSvg(host, qr, size, quiet) {
-  const modules = qr.getModuleCount();
-  const totalModules = modules + quiet * 2;
-  const svgNS = "http://www.w3.org/2000/svg";
-  const svg = document.createElementNS(svgNS, "svg");
-  svg.setAttribute("width", String(size));
-  svg.setAttribute("height", String(size));
-  svg.setAttribute("viewBox", `0 0 ${totalModules} ${totalModules}`);
-  svg.setAttribute("role", "img");
-  svg.setAttribute("aria-label", "QR Code");
-  svg.style.display = "block";
-
-  const bg = document.createElementNS(svgNS, "path");
-  bg.setAttribute("fill", "#ffffff");
-  bg.setAttribute("d", `M0 0h${totalModules}v${totalModules}H0z`);
-  bg.setAttribute("shape-rendering", "crispEdges");
-
-  const fg = document.createElementNS(svgNS, "path");
-  fg.setAttribute("fill", "#000000");
-  fg.setAttribute("d", buildQrSvgPath(qr));
-  fg.setAttribute("transform", `translate(${quiet} ${quiet})`);
-  fg.setAttribute("shape-rendering", "crispEdges");
-
-  svg.appendChild(bg);
-  svg.appendChild(fg);
-  host.appendChild(svg);
-}
-
-async function renderEzdataQrCode(token) {
-  const host = document.getElementById("ezdata-qrcode-canvas");
-  if (!host) return;
-  host.innerHTML = "";
-  if (!token) return;
-
-  const qrUrl = EZDATA_BIND_URL.replace("__TOKEN__", encodeURIComponent(token));
-
-  try {
-    const qrcodeFactory = await loadEzdataQrLibrary();
-    const qr = qrcodeFactory(0, "M");
-    qr.addData(qrUrl, "Byte");
-    qr.make();
-    renderQrSvg(host, qr, 220, 4);
-  } catch (error) {
-    host.textContent = "QR unavailable";
-  }
-}
-
-async function loadMode2Config() {
-  try {
-    const data = await apiCall("GET", "/api/mode/mode_2/config");
-    const dot = document.getElementById("ezdata-dot");
-    const text = document.getElementById("ezdata-status-text");
-    const token = document.getElementById("ezdata-token");
-    const qrCard = document.getElementById("ezdata-qrcode-card");
-    const activeToken = EZDATA_FORCE_TOKEN || data.device_token || "";
-
-    // 同步共享配置
-    modeConfig.orientation = data.orientation;
-    modeConfig.auto_slideshow = data.auto_slideshow;
-    modeConfig.low_power_mode = !!data.low_power_mode;
-    modeConfig.interval_minutes = data.interval_minutes;
-
-    if (token) token.value = activeToken;
-
-    // Web visit URL
-    const visitLink = document.getElementById("ezdata-visit-url");
-    if (visitLink && activeToken) {
-      const webUrl = EZDATA_WEB_URL.replace("__TOKEN__", activeToken);
-      visitLink.href = webUrl;
-      visitLink.textContent = EZDATA_WEB_BASE;
-    }
-
-    if (data.connected) {
-      dot.className = "ezdata-dot connected";
-      text.textContent = "Connected";
-    } else {
-      dot.className = "ezdata-dot disconnected";
-      text.textContent = "Not connected";
-    }
-
-    renderEzdataQrCode(activeToken);
-    if (qrCard) qrCard.classList.remove("hidden");
-  } catch(e) {}
-}
-
-function startEzdataPolling() {
-  if (ezdataPollTimer) return;
-  ezdataPollTimer = setInterval(loadMode2Config, 3000);
-}
-
-function stopEzdataPolling() {
-  if (ezdataPollTimer) { clearInterval(ezdataPollTimer); ezdataPollTimer = null; }
-}
-
 // ==================== Initialization ====================
 async function init() {
   bindDeviceNameInput("device-name-input");
   await Promise.all([loadWifiModes(), loadSetupConfig()]);
   updateBattery();
 
+  // Only mode_1 (local photo album) exists in this build. Go straight there.
+  // If the device isn't already in mode_1 (e.g. factory state where current
+  // mode is empty, or a stale stored mode), nudge it via the switch endpoint
+  // first so the firmware-side state matches the UI.
   try {
-    const [ready, status] = await Promise.all([
-      fetchDeviceReady(),
-      refreshStatusBar()
-    ]);
+    const [ready, status] = await Promise.all([fetchDeviceReady(), refreshStatusBar()]);
     if (status) updateStatusBar(status);
 
-    if (ready.ui && ready.ui.can_enter_mode && ready.mode && ready.mode.current) {
-      enterReadyMode(ready.mode.current);
-      loadStorage();
-      requestAnimationFrame(() => {
-        if (currentMode === "mode_1") applyModeConfig();
-      });
-    } else {
-      switchPage("landing-page");
+    if (!ready || !ready.mode || ready.mode.current !== "mode_1") {
+      try { await apiCall("POST", "/api/mode/switch", { mode: "mode_1" }); } catch(e) {}
     }
+    enterReadyMode("mode_1");
+    loadStorage();
+    requestAnimationFrame(applyModeConfig);
   } catch(e) {
-    switchPage("landing-page");
-    showToast("Cannot reach server. Run: python server.py", "error");
+    // Server unreachable: still show mode_1 UI so the user can see the layout;
+    // calls will fail and toast errors will surface if they try to act.
+    enterReadyMode("mode_1");
+    showToast("Cannot reach device server", "error");
   }
 }
 
-window.addEventListener("resize", () => {
-  if (currentMode === "mode_1") applyModeConfig();
-});
+window.addEventListener("resize", applyModeConfig);
 
 init();
 // Battery polling every 60 seconds

@@ -27,12 +27,10 @@
 #include "hal/wifi/hal_wifi.h"
 #include "hal/storage/hal_storage.h"
 #include "apps/local_photo_slideshow/local_photo_slideshow.h"
-#include "apps/ezdata_photo_push/ezdata_photo_push.h"
 #include "hal/utils/dns_server/dns_server.h"
 #include "hal/hal.h"
 #include "mdns.h"
 #include "apps/app_manager/app_manager.h"
-#include "hal/ezdata/hal_ezdata.h"
 
 using namespace hal_wifi;
 
@@ -75,8 +73,7 @@ static const struct {
     const char *id;
     const char *name;
 } k_supported_modes[] = {
-    {MODE_ID_LOCAL, "AP"},
-    {MODE_ID_EZDATA, "INTERNET"},
+    {MODE_ID_LOCAL, "Photo Album"},
 };
 
 static const char *get_mime(const char *path)
@@ -625,9 +622,10 @@ static esp_err_t h_device_ready(httpd_req_t *req)
     strlcpy(requested_mode, g_dev_state.requested_mode, sizeof(requested_mode));
     strlcpy(conn_err, g_dev_state.conn_err, sizeof(conn_err));
 
+    // Only LOCAL mode exists in this build; it does not depend on WiFi being
+    // up, so as soon as the requested mode is the live one we're ready.
     const bool mode_ready     = requested_mode[0] && strcmp(current_mode, requested_mode) == 0;
-    const bool is_local_mode  = strcmp(current_mode, MODE_ID_LOCAL) == 0;
-    const bool can_enter_mode = mode_ready && (is_local_mode || connected);
+    const bool can_enter_mode = mode_ready;
 
     const char *wifi_state = "disconnected";
     if (conn_err[0]) {
@@ -1132,23 +1130,6 @@ static esp_err_t h_mode_cfg_set(httpd_req_t *req)
     return ESP_OK;
 }
 
-static esp_err_t h_mode2_cfg_get(httpd_req_t *req)
-{
-    cJSON *r = cJSON_CreateObject();
-    cJSON_AddStringToObject(r, "orientation", hal.settings.rotation == 0 ? "landscape" : "portrait");
-    cJSON_AddBoolToObject(r, "auto_slideshow", hal.settings.auto_slideshow);
-    cJSON_AddNumberToObject(r, "interval_minutes", hal.settings.interval_minutes);
-    cJSON_AddBoolToObject(r, "low_power_mode", hal.settings.low_power_mode);
-
-    // EzData connection status
-    cJSON_AddBoolToObject(r, "connected", ezdata_is_connected());
-    cJSON_AddStringToObject(r, "device_token", hal.device_token.c_str());
-
-    send_json_response(req, r);
-    cJSON_Delete(r);
-    return ESP_OK;
-}
-
 static esp_err_t h_mode_switch(httpd_req_t *req)
 {
     char buf[256];
@@ -1372,8 +1353,6 @@ static const httpd_uri_t routes[] = {
     {"/api/battery", HTTP_GET, h_battery},
     {"/api/mode/mode_1/config", HTTP_GET, h_mode_cfg_get},
     {"/api/mode/mode_1/config", HTTP_POST, h_mode_cfg_set},
-    {"/api/mode/mode_2/config", HTTP_GET, h_mode2_cfg_get},
-    {"/api/mode/mode_2/config", HTTP_POST, h_mode_cfg_set},
     {"/api/mode/switch", HTTP_POST, h_mode_switch},
     {"/data/*", HTTP_GET, h_data_serve},
     {"/api/photos/display", HTTP_POST, h_photos_display},
