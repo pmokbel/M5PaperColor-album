@@ -19,6 +19,10 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=10240
 CONFIG_ESP_MAIN_TASK_AFFINITY_CPU0=y
 
 # ===== Console UART =====
+# Primary console on UART (GPIO 5/4), USB-Serial-JTAG as secondary. Note that
+# TinyUSB MSC takes over USB after boot so USB-Serial-JTAG is only available
+# during the brief pre-MSC boot window (useful for esptool flashing). Attach a
+# UART probe to GPIO 5/4 if you need runtime logs.
 CONFIG_ESP_CONSOLE_UART_CUSTOM=y
 CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG=y
 CONFIG_ESP_CONSOLE_UART_TX_GPIO=5
