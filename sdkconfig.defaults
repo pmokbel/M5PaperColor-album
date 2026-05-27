@@ -87,5 +87,15 @@ CONFIG_I2C_MS_TO_WAIT=200
 CONFIG_MDNS_MULTIPLE_INSTANCE=y
 CONFIG_MDNS_ENABLE_CONSOLE_CLI=y
 
+# ===== LWIP =====
+# app_server.cpp configures httpd_config_t.max_open_sockets = 13. ESP-IDF's
+# httpd validates this against (LWIP_MAX_SOCKETS - 3) because three sockets
+# are reserved internally by the HTTP server. The IDF default is 10, which
+# leaves only 7 available, so httpd_start() returns ESP_ERR_INVALID_ARG with:
+#   httpd: Config option max_open_sockets is too large (max allowed 7, ...)
+# The HTTP server then never binds port 80 — captive portal and LAN web UI
+# are both unreachable.
+CONFIG_LWIP_MAX_SOCKETS=16
+
 # ===== Core Dump =====
 CONFIG_ESP_COREDUMP_ENABLE_TO_NONE=y
