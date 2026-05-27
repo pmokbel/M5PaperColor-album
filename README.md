@@ -30,10 +30,31 @@ git submodule update --init --recursive
 . $IDF_PATH/export.sh
 idf.py set-target esp32s3
 idf.py build
-idf.py -p /dev/cu.usbmodemXXXX flash
+
+./tools/flash.sh       # then power-cycle the device when prompted
 ```
 
-> **Flashing note** — TinyUSB MSC takes over the USB-C port after boot, so esptool can only talk to the device during the brief pre-MSC boot window. If `idf.py flash` can't find the port, **power the device off and on again** while esptool is waiting.
+Set `PAPERCOLOR_PORT` in your shell if `/dev/cu.usbmodem*` isn't right for you (Linux, multiple devices, etc.) — details in [the next section](#why-the-helper-script).
+
+### Why the helper script?
+
+The ESP32-S3's USB-Serial-JTAG (what `esptool` talks to) and USB-OTG (which TinyUSB MSC uses to expose the device as a USB drive) share the single USB-C wire. The boot ROM exposes USB-Serial-JTAG for ~1–2 seconds at every power-on, then the firmware initializes TinyUSB MSC and the CDC endpoint disappears. **`esptool` can only reach the chip during that boot window.**
+
+`tools/flash.sh` polls for the configured port and dispatches `idf.py` the moment it appears. Power-cycle the device while the script is waiting and it just works.
+
+Set the port once per shell so it's not repeated on every invocation:
+
+```bash
+export PAPERCOLOR_PORT=/dev/cu.usbmodem21101   # macOS, specific device
+# or PAPERCOLOR_PORT='/dev/ttyACM*' on Linux
+
+./tools/flash.sh           # app-flash — preserves NVS / saved photos (default)
+./tools/flash.sh full      # bootloader + partition table + app + storage
+./tools/flash.sh erase     # wipe everything, then full flash
+./tools/flash.sh monitor   # open serial monitor (catches USB-CDC at boot)
+```
+
+If `PAPERCOLOR_PORT` is unset, the script falls back to `/dev/cu.usbmodem*` — fine for most macOS setups with a single device plugged in.
 
 ## First-run onboarding
 
@@ -71,7 +92,7 @@ See [CHANGES.md](CHANGES.md) for a complete file-by-file accounting.
 - The AP, when it does come up for onboarding, is still **open** (no WPA password). This is the upstream's onboarding pattern. The exposure window is now bounded — boot before STA settles, or after an explicit long-press — but it's there. A future change could derive a per-device WPA password from the MAC and put it in the on-screen QR code.
 - The EzData C++ source files (`main/apps/ezdata_photo_push/`, `main/hal/ezdata/`) are still compiled into the binary. They're unreachable from the UI but bloat the binary. A full cleanup is on the TODO.
 - The first-ever boot after a chip erase shows a one-time factory-guide image and powers off — by design, inherited from upstream. Press the power button again to actually start the firmware.
-- Runtime serial logs go to UART (GPIO 5/4), not USB-CDC. USB-CDC is occupied by TinyUSB MSC after boot. Attach a UART probe to GPIO 5/4 if you need to read runtime logs.
+- Runtime serial logs go to UART (GPIO 5/4), not USB-CDC — USB-CDC is occupied by TinyUSB MSC after boot (see [Build & flash](#build--flash)). Attach a UART probe to GPIO 5/4 if you need to read runtime logs.
 
 ## License
 
